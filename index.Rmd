@@ -38,11 +38,12 @@ opts_chunk$set(echo=TRUE,
                warning=FALSE,
                options(scipen=999))
 opts_knit$set(width=75)
-setwd("/Users/claudegrasland1/git/worldpower")
+
+#setwd("/Users/claudegrasland1/git/worldpower")
 ```
 
 <p style="border:0.5px; border-style:solid; border-color:navajowhite3; padding: 1em; font-size:15px">
-Ce cours propose de décomposer les étapes successives d'une démarche de datamining en partant d'un exemple simple : la création d'une base de donnée sur les pays du Monde. 
+Ce cours propose de décomposer les étapes successives de création d'une base de donnée sur la puissance des pays du Monde entre 1990 et aujourd'hui à l'aide de données issues de deux API. D'une part l'API de la Banque Mondiale pour les données statistiques et d'autre part l'API Natural Earth pour le fonds de carte correspondant.
 <br>
 Claude Grasland (Professeur à l'Université de Paris)
 </p>
