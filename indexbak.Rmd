@@ -1,0 +1,997 @@
+---
+title: "Le monde ne suffit pas ..."
+subtitle: "Une chaîne de traitement"
+author: "Claude Grasland"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    css : css/styles.css
+bibliography: biblio.bib
+link_citations: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r knitr_init, echo=FALSE, cache=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+library(rmdformats)
+library(data.table)
+library(dplyr)
+library(plotly)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(wbstats)
+library(tidyr)
+#library(tidyverse)
+
+## Global options
+options(max.print="80")
+opts_chunk$set(echo=TRUE,
+               cache=TRUE,
+               prompt=FALSE,
+               tidy=FALSE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE,
+               options(scipen=999))
+opts_knit$set(width=75)
+setwd("/Users/claudegrasland1/git/worldpower")
+```
+
+<p style="border:0.5px; border-style:solid; border-color:navajowhite3; padding: 1em; font-size:15px">
+Ce cours propose de décomposer les étapes successives d'une démarche de datamining en partant d'un exemple simple : la création d'une base de donnée sur les pays du Monde. 
+<br>
+Claude Grasland (Professeur à l'Université de Paris)
+</p>
+
+<br>
+
+
+
+
+
+## Introduction {-}
+
+
+
+
+
+# COLLECTE
+
+## L'API de la Banque Mondiale
+
+
+Supposons que l'on souhaite télécharger la population, la superficie et le PIB des pays du monde. Plutôt que d'aller chercher des fichiers sur un site web, nous allons utiliser une API proposée par la Banque Mondial qui permet de télécharger les données facilement et surtout de les mettre à jour régulièrement. Pour cela on va installer le package R correspondant à l'API `wbstats` de la Banque mondiale.
+
+https://cran.r-project.org/web/packages/wbstats/vignettes/Using_the_wbstats_package.html
+
+Au moment du chargement du package, il est créé un fichier wb_cachelist qui fournit l'ensemble des donnes disponibles sous la forme d'une liste de tableaux de méta-données.
+
+
+```{r}
+cat<-wb_cachelist
+str(cat,max.level = 1)
+```
+
+
+### Le tableau "countries"
+
+Il fournit des renseignements de base sur les différents pays, leurs codes, etc.
+
+```{r}
+str(cat$countries)
+```
+
+Le tableau comporte 304 observation et il mélange des pays (France), des fragments de pays (Réunion) et des agrégats de pays (Europe). Il faudra donc bien faire attention lors de l'extraction à réfléchir à ce que l'on souhaite utiliser. Par exemple, si l'on veut juste les pays :
+
+```{r}
+
+pays<-cat$countries[cat$countries$income_level!="Aggregates",c("iso3c", "country","capital_city","longitude","latitude", "region","income_level")]
+kable(head(pays))
+
+```
+
+### Le tableau indicators
+
+Il comporta pas loin de 17000 variables ... Autant dire qu'il est difficile de l'explorer facilement si l'on ne sait pas ce que l'on cherche. 
+
+```{r}
+indic<-cat$indicators
+kable(head(indic,3))
+
+```
+
+### La recherche d'indicateurs
+
+Supposons qu'on recherche les données récentes sur les émissions de CO2. On va utiliser le mot-clé *CO2* pour rechercher les variables correspondantes dans le catalogue, ce qui donne 45 réponses 
+
+```{r}
+vars <- wbsearch(pattern = "CO2",fields="indicator")
+kable(vars)
+```
+
+On va finalement retenir deux indicateurs généraux
+
+- EN.ATM.CO2E.KT : émissions de CO2 en kilotonnes
+- EN.ATM.CO2E.PC : émissions de CO2 en tonnes par habitant
+
+Puis examiner plus en détail leurs métadonnées
+
+```{r}
+meta<-cat$indicators[cat$indicators$indicator_id %in% c("EN.ATM.CO2E.KT","EN.ATM.CO2E.PC"),]
+kable(meta)
+```
+
+
+### L'extraction des données
+
+Elle se fait à l'aide de la fonction wb_data qui comporte de nombreuses options. On peut par exemple extraire la valeur la plus récentes à l'aide de l'option `mrv = 1`
+
+On peut ainsi établir le palmares des plus gros émetteurs de COE en valeur absolue ...
+
+```{r}
+tabCO2 <- wb_data(indicator = c("EN.ATM.CO2E.KT"),
+                 return_wide = TRUE,
+                 mrv=1,
+                 country ="countries_only")
+
+
+
+tabCO2<-tabCO2[order(tabCO2$EN.ATM.CO2E.KT,decreasing = T),]
+kable(head(tabCO2,10))
+```
+
+... ou bien par habitant.
+
+```{r}
+tabCO2 <- wb_data(indicator = c("EN.ATM.CO2E.PC"),
+                 return_wide = TRUE,
+                 mrv=1,
+                 country ="countries_only")
+
+
+
+tabCO2<-tabCO2[order(tabCO2$EN.ATM.CO2E.PC,decreasing = T),]
+kable(head(tabCO2,10))
+```
+
+
+
+## Puissance pays du Monde (1990-2020)
+
+Nous allons essayer de constituer un tableau de la *puissance* des pays du Monde au cours de la période 1995-2020, à l'aide de six indicateurs de *stock* correspondant à différentes formes de puissance : 
+
++ **Puissance territoriale**
+  - SRF : Superficie totale du pays en km2
+  - ARB : Superficie de terres arables en hectares
+  
++ **Puissance démographique**
+  - POP : Population totale en habitants
+  - URB : Population urbaine en habitants
+  
++ **Puissance économique**
+  - GDP : Produit Intérieur Brut en parité de pouvoir d'achat
+  - CO2 : Emissions de CO2 en tonnes
+  
+  
+Ces indicateurs ont été choisis en raison de leur simplicité qui en assure la disponibilité pour la plupart des pays et pour la plupart des dates (excepté dans le cas du CO2 qui n'est mesuré que tardivement.)
+  
+
+### Choix des indicateurs
+On choisit un ensemble de données dont on connait l'identifiant et que l'on souhaite pouvoir analyser sur une période de temps longue. 
+
+```{r}
+world_data <- wb_data(indicator = c("AG.SRF.TOTL.K2","AG.LND.ARBL.HA","SP.POP.TOTL","SP.URB.TOTL","NY.GDP.MKTP.CD", "EN.ATM.CO2E.KT"),
+                 return_wide = TRUE,
+                 start_date = 1990,
+                 end_date = 2019,
+                 country ="countries_only")
+
+world_data<-world_data[,-c(1,3)]
+
+# recodage (attention : ordre alphabetique)
+names(world_data)<-c("iso3c","date","ARB","SRF","CO2","GDP","POP","URB")
+
+```
+
+### Recoller avec les données pays
+
+On rajoute quelques données relatives au pays qui pourront être utiles par la suite.  
+
+```{r}
+pays<-cat$countries[cat$countries$income_level!="Aggregates",c("iso3c", "country","capital_city","longitude","latitude", "region","income_level")]
+tab<-merge(pays,world_data, by="iso3c",all.x=F,all.y=T)
+kable(head(tab))
+
+saveRDS(tab,"data/wb_don_1990_2019.Rdata")
+```
+
+
+
+### Ajouter des métadonnées
+
+```{r}
+# Extract meta
+meta<-cat$indicators[cat$indicators$indicator_id %in% c("AG.SRF.TOTL.K2","AG.LND.ARBL.HA","SP.POP.TOTL","SP.URB.TOTL","NY.GDP.MKTP.CD", "EN.ATM.CO2E.KT"),]
+
+# Select information and add personal code
+meta<-data.frame(meta[,c(1,2,4,5)])
+meta$shortcode<-c("ARB","SRF","CO2","GDP","POP","URB")
+meta<-meta[,c(5,1,2,3,4)]
+
+# Display
+kable(meta)
+
+# Save meta
+saveRDS(meta,"data/wb_don_1990_2019_meta.Rdata")
+write.table(meta,"data/wb_don_1990_2019_meta.csv",sep=";",dec=",", row.names = F,fileEncoding = "UTF-8")
+```
+
+
+
+# ESTIMATIONS 
+
+
+Le tableau que nous avons construit comporte encore de nombreuses valeurs manquantes. Or, notre objectif est de calculer la part d'un pays dans le total mondial ce qui n'est pas possibl si on ne dipose pas d'une estimation des valeurs de chacun des pays. 
+
+Nous allons donc construire un nouveau tableau où l'on essayera de remplir le maximum de valeurs manquantes tout en précisant la méthode d'estimatiopn utilisée.
+
+
+## Diagnostic des valeurs manquantes
+
+Avant toute chose, nous allons estimer pour chacune des variables la part des valeurs manquantes en fonction des dates ou des pays.
+
+
+### Corrections manuelles
+
+- On complète les données de terres arables et de superficie qui manquent pour les dernières dates car elles ont du peu évoluer.
+- On complète également les données de CO2 en conservant la valeur de 2015 ce qui est évidememnt abusif mais permet d'avoir un tableau complet.
+- On ajoute manuellement la superficie du Soudan et du Sud-Soudan
+- On procède à une estimation grossière du PIB de la Corée du Nord à partir de ses émissions de CO2 en supposant qu'elles suivent la même loi qu'en Corée du Sud
+- On procède de la même manière à l'estimation de la population urbaine du Kosovo par celle de la Serbie
+
+```{r}
+
+# Load data
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+
+# Correction terres arables
+length(don$ARB[don$date==2016])
+don$ARB[don$date==2016]<-don$ARB[don$date==2015]
+don$ARB[don$date==2017]<-don$ARB[don$date==2015]
+don$ARB[don$date==2018]<-don$ARB[don$date==2015]
+don$ARB[don$date==2019]<-don$ARB[don$date==2015]
+
+## Correction superfice
+don$SRF[don$date==2019]<-don$SRF[don$date==2018]
+
+# Correction CO2
+don$CO2[don$date==2016]<-don$CO2[don$date==2015]
+don$CO2[don$date==2017]<-don$CO2[don$date==2015]
+don$CO2[don$date==2018]<-don$CO2[don$date==2015]
+don$CO2[don$date==2019]<-don$CO2[don$date==2015]
+
+# Sudan and south Sudan area
+don$SRF[don$iso3c=="SDN"]<-1731610
+don$SRF[don$iso3c=="SSD"]<-619700
+
+
+# Sudan and south Sudan arable area
+don$ARB[don$iso3c=="SDN"]<-19823160
+don$ARB[don$iso3c=="SSD"]<-619700*19823160/1731610
+
+# GDP Corée du Nord
+don$GDP[don$iso3c=="PRK"]<-don$CO2[don$iso3c=="PRK"]*don$GDP[don$iso3c=="KOR"]/don$CO2[don$iso3c=="KOR"]
+
+# URB Kosovo
+don$URB[don$iso3c=="XKX"]<-don$POP[don$iso3c=="XKX"]*don$URB[don$iso3c=="SRB"]/don$POP[don$iso3c=="SRB"]
+
+```
+
+
+
+
+### Tableau de synthèse 
+
+On crée un tableau de synthèse des valeurs manquantes en mode colonne (toutes les variables les unes au dessus des autres et non pas côte à côte) et on utilise pour cela le package `tidyverse` qui est adapté à ce type de manipulation, notamment avec la fonction `gather`.
+
+```{r}
+
+tabmis<-don %>% select(iso3c,country,date,ARB,SRF,CO2,GDP,POP,URB)  %>%
+  gather("ARB", "SRF","CO2","GDP","POP","URB",key = VAR, value = DON) %>%
+  mutate(Missing = is.na(DON))
+
+kable(head(tabmis))             
+
+```
+
+
+
+### Valeurs manquantes par date
+
+On réalise un graphique montrant le % de données manquantes par date et par variable en se servant de `ggplot2`
+
+```{r}
+
+res <- tabmis %>% group_by(VAR, date) %>% 
+                  summarise(nbmis=sum(Missing), nb=n(), pct = 100*nbmis/nb) 
+
+p<-ggplot(res) + 
+  aes(x=date,y=pct,color=VAR) +
+  geom_line() +
+  scale_y_continuous("% de pays à valeurs manquantes", breaks = c(0,10,20,30,40,50,60,70,80,90,100))+
+  scale_x_continuous("Année", breaks = c(1990, 1995, 2000, 2005, 2010, 2015, 2020))
+p
+
+```
+
+Les valeurs manquantes des années 1990 sont liées souvent à des pays qui n'existent pas encore comme le Sud-Soudan ou le Kosovo et qui ne disposent donc pas de données. Le fait qu'il demeure toujours 5% de pays non renseignés est lié à des pays de très petite taille mal documentés. 
+
+On observe que les données relatives au CO2 et aux terres arables (ARB) n'existent pour aucun pays après 2016.  Il en va de même pour la superficie totale (SRF) des pays en 2019. Comme cette variable évolue peu au cours du temps, on affecte la valeur de la dernière année disponible.
+
+
+
+
+### Valeurs manquantes par pays
+
+On examine maintenant les pays ayant la plus forte proportion de valeurs manquantesn indépendamment de la variable concernée. 
+
+```{r}
+
+res <- tabmis %>% group_by(iso3c, country) %>% 
+                  summarise(nbmis=sum(Missing), nb=n(), pct = 100*nbmis/nb) %>%
+                  arrange(-pct)
+
+kable(head(res,20))
+
+```
+
+Trois cas apparaissent clairement :
+
++ **Micro-états et territoires dépendants** comme Monaco, Nauru, Guam, etc... 
+
++ **Etats issus de recompositions frontalières** comme le Nord et le Sud-Soudan, le Kosovo, la Serbie, l'Erythrée ... Ce sont par définition des pays qui n'existent pas à toutes les dates et l'attribution de valeurs dans le passé est une reconstitution.
+
++ **Etats en crise ou dictatures** qui ne fournissent pas de données comme la Corée du Nord ou sont dans l'incapacité de le faire comme la Syrie au cours des dernières années. 
+
+Si le premier cas n'est pas trop gênant (les petits états pèsent peu dans le total mondial), les second et troisième cas sont plus ennuyeux car il speuvent fausser le calcul de la part du total mondial des autres pays. On va donc tenter de proposer une estimation des valeurs manquantes qui permette de reconstituer le total mondial.
+
+
+
+## Estimation des valeurs manquantes
+
+
+
+### Fonction d'estimation
+
+Nous avons construit ici une fonction d'estimation complexe qui utilise trois méthodes différentes selon la disposition des données manquantes :
+
++ **interpolation** : dans le cas d'une série interrompue sur un intervalle
++ **extrapolation** : dans le cas d'ue série où il manque les dernières valeurs et pour laquelle on applique la tendance moyenne des pays à valeurs non manquantes.
++ **retropolation** : dans le cas d'une série où il manque les premières valeurs et pour laquelle on applique la tendance moyenne des pays à valeurs non manquantes.
+
+La méthode n'est toutefois pas applicable dans deux cas :
+
+1. absence complète de données pour un pays : car on ne dispose d'aucun point de calage
+2. absence complète de données pour une année : car on ne dispose pas de tendance moyenne de référence.
+
+
+
+```{r}
+# load a data.frame with columns space, time, indic 
+estim<-function(df   = don)               # dataframe
+ 
+{
+
+
+# Select variable
+sel<-dcast(df,space~time)
+M<-as.matrix(sel[,-1])
+rownames(M)<-sel$space
+
+####################################################
+########   Estimation Procedure ####################
+####################################################
+
+# check for lines or column  filled with missing values and eliminate
+check1<-apply(!is.na(M),FUN="sum",1)
+check2<-apply(!is.na(M),FUN="sum",2)
+M<-M[check1>0,check2>0]
+
+
+
+dim(M)
+
+
+# define dimensions
+nr<-nrow(M)
+nr
+nc<-ncol(M)
+nc
+
+
+# create time matrix with NA
+Mt<-matrix(rep(1:nc,nr),nrow=nr,nc=nc,byrow=T)
+rownames(Mt)<-rownames(M)
+colnames(Mt)<-colnames(M)
+Mt[is.na(M)]<-NA
+Mt[1:4,1:4]
+
+
+
+# identify previous and next available valuer
+Mt_min<-Mt
+Mt_max<-Mt
+for ( i in 1:nr) { 
+  for ( j in 1:nc) { 
+    if (is.na(Mt[i,j])) {
+      Mt_min[i,j]<-max(Mt[i,1:j],na.rm=T)
+      Mt_max[i,j]<-min(Mt[i,j:nc],na.rm=T)    
+    }  
+  }
+}
+Mt_min[1:4,1:4]
+Mt_max[1:4,1:4]
+
+
+# choose estimation method
+M_met<-matrix("OK",nrow=nr,ncol=nc)
+rownames(M_met)<-rownames(M)
+colnames(M_met)<-colnames(M)
+for ( i in 1:nr) { 
+  for ( j in 1:nc) { 
+    if (is.na(Mt[i,j])) {
+      M_met[i,j]<-"IN"
+      if (is.infinite(Mt_max[i,j])) {M_met[i,j]<-"EX"} 
+      if (is.infinite(Mt_min[i,j])) {M_met[i,j]<-"RE"}  
+    }   
+  }
+}
+M_met[1:4,1:4]
+
+###### Estimation of missing values  ####
+
+M_est<-M
+str(M_est)
+
+#### step 1: Interpolation ######
+
+for ( i in 1:nr) { 
+  for ( j in 1:nc) { 
+    if ((M_met[i,j]=="IN")) {
+      t0<-Mt_min[i,j]
+      t1<-Mt_max[i,j] 
+      tacm<-(M[i,t1]/M[i,t0])**(1/(t1-t0))
+      M_est[i,j]<-M[i,t0]*(tacm**(j-t0))
+    }   
+  }
+}
+M_est[1:4,1:4]
+
+
+#### step 2: Extrapolation ######
+
+for ( i in 1:nr) { 
+  for ( j in 2:nc) { 
+    if ((M_met[i,j]=="EX")) {
+      N<-M_est
+      t0<-j-1
+      t1<-j
+      N<-M_est[is.na(M_est[,t0])==F,]
+      N<-N[is.na(N[,t1])==F,]
+      tacm<-(sum(N[,t1])/sum(N[,t0]))**(1/(t1-t0)) 
+      M_est[i,j]<-M_est[i,t0]*(tacm**(t1-t0))
+    }   
+  }
+}
+M_est[1:4,1:4]
+
+
+#### step 3: Retropolation ######
+
+for ( i in 1:nr) { 
+  for ( j in (nc-1):1) { 
+    if ((M_met[i,j]=="RE")) {
+      N<-M_est
+      t0<-j
+      t1<-j+1
+      N<-M_est[is.na(M_est[,t0])==F,]
+      N<-N[is.na(N[,t1])==F,]
+      tacm<-(sum(N[,t1])/sum(N[,t0]))**(1/(t1-t0)) 
+      M_est[i,j]<-M_est[i,t1]/(tacm**(t1-t0))
+    }   
+  }
+}
+M_est[1:4,1:4]
+
+
+
+#######################################################
+############# EXPORT RESULTS  #########################
+#######################################################
+
+x<-reshape2::melt(M_est)
+names(x)<-c("space","time","estim")
+y<-reshape2::melt(M_met)
+names(y)<-c("space","time","method")
+z<-merge(x,y, by=c("space","time"))
+
+return(z)
+}
+
+```
+
+
+
+### Application de la fonction
+
+On va reconstituer pour chacune de nos variables les valeurs estimées lorsque cela est possible
+
+
+```{r}
+# Estim ARB
+df<-data.table(space=don$iso3c,time=don$date,index=don$ARB)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","ARB_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Estim SRF
+df<-data.table(space=don$iso3c,time=don$date,index=don$SRF)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","SRF_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Estim CO2
+df<-data.table(space=don$iso3c,time=don$date,index=don$CO2)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","CO2_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Estim GDP
+df<-data.table(space=don$iso3c,time=don$date,index=don$GDP)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","GDP_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Estim POP
+df<-data.table(space=don$iso3c,time=don$date,index=don$POP)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","POP_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Estim URB
+df<-data.table(space=don$iso3c,time=don$date,index=don$URB)
+est<-estim(df)[,1:3]
+names(est)<-c("iso3c","date","URB_est")
+don<-merge(don,est, by=c("iso3c","date"), all.x=T,al.y=F)
+
+# Save
+saveRDS(don,"data/wb_don_1990_2019.Rdata")
+
+```
+
+Attention ! les valeurs estimées sont parfois très éloignées de la réalité, surtout dans le cas des extrapolations où elles suivent la tendance mondiale. Mais cette méthode d'estimation permet, comme nous l'avons expliqué, de pouvir calculer le total mondial et, du coup, de pouvoir estimer pour chaque critère la part du pays dans la population mondiale et son rang à chacune des dates. 
+
+
+
+# TRANSFORMATION
+
+On se propose d'enrichir notre tableau à l'aide de nouvelles variables 
+
+1. Rang des pays pour chacun des critères
+2. Part des pays dans le total mondial pour chacun des critères
+3. Indicateurs synthétiques de puissance combinant les différents critères
+
+## Rangs mondial des pays 
+
+
+### Calcul des rangs par variable et date
+
+On utilise dplyr pour calculer le rand de chaque variable à chacune des dates. On ajoute une variable supplémenaire qui est la moyenne des rang sur les six classements.
+
+```{r}
+
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+#don<-as_tibble(don)
+don2<-don %>%  group_by(date) %>% mutate(ARB_rnk = rank(desc(ARB_est)),
+                                         SRF_rnk = rank(desc(SRF_est)),
+                                         CO2_rnk = rank(desc(CO2_est)),
+                                         GDP_rnk = rank(desc(GDP_est)),
+                                         POP_rnk = rank(desc(POP_est)),
+                                         URB_rnk = rank(desc(URB_est)),
+                                         TOT_rnk = (ARB_rnk+SRF_rnk+CO2_rnk+GDP_rnk+POP_rnk+URB_rnk)/6) 
+
+```
+
+### Application au calcul des 10 pays les plus puissants en 1990 et 2019 
+
+```{r}
+tab<-don2 %>% filter(date==1990) %>% 
+             select(iso3c, country, TOT_rnk, ARB_rnk,SRF_rnk,CO2_rnk,GDP_rnk,POP_rnk,URB_rnk,TOT_rnk) %>%
+             arrange(TOT_rnk)
+kable(head(tab,10), digits=1)
+
+```
+
+
+```{r}
+tab<-don2 %>% filter(date==2019) %>% 
+             select(iso3c, country, TOT_rnk, ARB_rnk,SRF_rnk,CO2_rnk,GDP_rnk,POP_rnk,URB_rnk,TOT_rnk) %>%
+             arrange(TOT_rnk)
+kable(head(tab,10), digits=1)
+
+```
+
+
+## Part du total mondial 
+
+Le poids d'un pays dans le monde est entendu ici comme sa part (son pourcentage) du total mondial. il correspond donc à une mesure de *puissance relative*.
+
+### Calcul des poids par variable et date
+
+On utilise à nouveau `dplyr` pour calculer la part de chaque pays pour chaque variable à chacune des dates. On ajoute une variable supplémenaire qui est la moyenne des poids sur les six classements.
+
+```{r}
+
+don2<-don2 %>%  group_by(date) %>% mutate(ARB_wgt = 100*ARB_est/sum(ARB_est,na.rm=T),
+                                         SRF_wgt = 100*SRF_est/sum(SRF_est,na.rm=T),
+                                         CO2_wgt = 100*CO2_est/sum(CO2_est,na.rm=T),
+                                         GDP_wgt = 100*GDP_est/sum(GDP_est,na.rm=T),
+                                         POP_wgt = 100*POP_est/sum(POP_est,na.rm=T),
+                                         URB_wgt = 100*URB_est/sum(URB_est,na.rm=T),
+                                         TOT_wgt = (ARB_wgt+SRF_wgt+CO2_wgt+GDP_wgt+POP_wgt+URB_wgt)/6)
+
+```
+
+### Application au calcul des 10 pays les plus puissants en 1990 et 2020 
+
+```{r}
+tab<-don2 %>% filter(date==1990) %>% 
+             select(iso3c, country, TOT_wgt, ARB_wgt,SRF_wgt,CO2_wgt,GDP_wgt,POP_wgt,URB_wgt,TOT_wgt) %>%
+             arrange(desc(TOT_wgt))
+kable(head(tab,10), digits=1)
+
+```
+
+
+```{r}
+tab<-don2 %>% filter(date==2019) %>% 
+             select(iso3c, country, TOT_wgt, ARB_wgt,SRF_wgt,CO2_wgt,GDP_wgt,POP_wgt,URB_wgt,TOT_wgt) %>%
+             arrange(desc(TOT_wgt))
+kable(head(tab,10), digits=1)
+
+```
+
+
+
+
+```{r}
+saveRDS(don2,"data/wb_don_1990_2019.Rdata")
+write.table(don2,"data/wb_don_1990_2019.csv",sep=";",dec=",", row.names = F,fileEncoding = "UTF-8")
+```
+
+# SPATIALISATION
+
+Au cours de cette étape, on va essayer d'associer à chaque pays du Monde une géométrie permettant d'en faire la cartographie. Longtemps compliquée, cette opération est maintenant facilitée par le packge `sf` (*spatial features*) qui permet grosso modo de stocker la géométrie (contour des pays) sous la forme d'une simple colonne ajoutée au tableau de données. On peut ensuite facilement réaliser des changements de projections et des cartes statiques ou dynamiques.
+
+Une difficulté plus importante est de trouver un fonds de carte où le code des unités géométriques corresponde à celui des unités statistiques que nous avons collectées. Cette opération de **jointure** s'avère toujours délicate et elle l'est tout particulièrement dans le cas des pays du monde qui sont un objet finalement mal défini, tant sur le plan politique que sur le plan statistique.
+
+
+## L'API Natural Earth
+
+Nous allons ici utiliser le fonds de carte *Natural Earth* qui est un fonds de carte libre de droit et mis à jour régulièrement. Le site web du projet se situe à l'adresse suivante :
+
+https://www.naturalearthdata.com/
+
+Il indique ses objectifs comme suit : 
+
+> "Natural Earth is a public domain map dataset available at 1:10m, 1:50m, and 1:110 million scales. Featuring tightly integrated vector and raster data, with Natural Earth you can make a variety of visually pleasing, well-crafted maps with cartography or GIS software.[...] Natural Earth was built through a collaboration of many volunteers and is supported by NACIS (North American Cartographic Information Society), and is free for use in any type of project (see our Terms of Use page for more information)."
+
+On peut télécharger les différents fonds de carte sur le site web, mais dans une perspective de mise à jour automatique régulière du fonds de carte il est plus pertinent d'utiliser l'API `rnaturalearth`qui permet d'accéder directement à la plupart des fonds de carte avec juste quelques lignes de code.
+
+
+### le fonds de carte *countries110* (175 unités)
+
+On va télécharger tout d'abord le fonds de carte des pays du Monde avec une forte généralisation des contours `countries110` et le transformer en objet de type sf avant de le visualiser et d' examiner le nombre d'unités 
+
+
+```{r}
+
+map<-st_as_sf(sovereignty110)
+par(mar=c(0,0,0,0), mfrow=c(1,1))
+plot(map$geometry,col="lightyellow")
+dim(map)
+
+```
+
+Ce fonds de carte comporte 175 unités spatiales, mais de quoi s'agit-il exactement. Les métadonnées associées permettent de se faire une idée plus précise de la nature exacte de ces unités. Prenons pour cela quelques exempes
+
+```{r}
+sel<-map[map$adm0_a3 %in% c("FRA", "NCL","ATA","ATF","USA", "PRI","CHN","TWN","MAR", "SAH","CHN","TWN","ISR","PSX"),c("sovereignt","sov_a3","type","admin", "adm0_a3","name","note_adm0","iso_a3","wb_a3")]
+kable(sel)
+```
+
+Les exemples présentés dans le tableau ci-dessus montrent la complexité du problème de définition et de représentation cartographique des "pays" ou "bouts du monde". Quelques remarques :
+
+1. La *France* (FR1) en tant qu'état souverain regroupe ici cartographiquement la partie métropolitaine du pays et les Départements d'Outre-Mer (Guyane Française, Réunion, Martinique, Guadeloupe) en une seule entité spatiale, mais elle met à part la Nouvelle Calédonie et les îles antarctiques. 
+2. *Porto Rico* (PRI) est considéré comme une dépendance des *Etats-Unis* (US1) au même titre que la *Nouvelle Calédonie*(NCL) est considérée comme une dépendance de la *France* (FR1).
+3. Le *Sahara occidental* (SAH) est considéré comme une zone *indéterminée* bien qu'il soit occupé par le *Maroc* (MAR).
+4. la Palestine (PSX) est considéré comme une zone *disputée* mais rattachée en terme de souveraineté à *Israël* (ISR) et une note précise qu'elle est *partiellement semi-administrée*. Le code sur trois caractères des territoires palestiniens est très variable selon les organisations (PSX, PSE, WBG).
+5. *Taïwan* (TWN) est présenté comme un état souverain, mais son code ISO3 est manquant pour la banque mondiale car la Chine refuse de le reconnaître. 
+6. Plusieurs états souverains de petite taille sont absents de ce fonds de carte qui ne regroupe que 175 unités soit moins que les 193 pays membres des Nations-Unies. La plupart des îles du Pacifique sont en particulier éliminées car leur surface les rendrait invisible pour le degré de généralisation cartographique adopté. 
+
+
+###  le fonds de carte *sovereignty110* (171 unités)
+
+On peut obtenir un fonds différent en installant le package complémentaire `rnaturalearthdata` qui permet notamment de distinguer le fonds de carte des *countries* (c'est-à-dire des "bouts du monde" souverains ou non) et des *sovereignty* (c'est-à-dire des états souverains)
+
+```{r}
+
+map<-st_as_sf(sovereignty110)
+par(mar=c(0,0,0,0))
+plot(map$geometry,col="lightyellow")
+dim(map)
+```
+
+Le fonds de carte permet désormais de récupérer la plupart des pays souverains du Monde, y compris les petits états insulaires du Pacifique, mais il fait disparaître de façon sélective les territoires indéterminés ou disputés. Ainsi, le Sahra Occidental demeure partiellement séparé du Maroc mais les territoires palestiniens sont annexés à Israël ainsi que le plateau du Golan ce qui n'est évidemment pas un choix neutred'un point de vue géoolitique.
+
+```{r}
+par(mfrow=c(1,2))
+plot(map[map$sov_a3 %in% c("ISR","JOR","SYR","LBN","EGY"),]$geometry, col=c("gray80","orange","gray80","gray80","gray80"))
+title("Limits of Israël",cex=0.5)
+plot(map[map$sov_a3 %in% c("MAR","SAH","DZA","MRT"),]$geometry, col=c("gray70","orange","gray70","lightyellow"))
+title("Limits of Morocco")
+
+
+```
+
+
+### Le fonds de carte *tinycountries110* 
+
+On peut aussi revenir au fonds de carte des countries et extraire les "petits pays" en ne conservant que leur point central, sans tracer un polygône de contour. On pourra ainsi les cartographier sous forme ponctuelle.
+
+```{r}
+
+map<-st_as_sf(countries110)
+small<-st_as_sf(tiny_countries110)
+par(mar=c(0,0,0,0), mfrow=c(1,1))
+plot(map$geometry,col="lightyellow")
+plot(small$geometry,col="red", add=T)
+```
+
+### Le fonds de carte *countries50* 
+
+On peut également choisir un fonds moins généralisé dans leque tous les petits pays seront présents
+
+```{r}
+
+map<-st_as_sf(countries50)
+
+par(mar=c(0,0,0,0))
+plot(map$geometry,col="lightyellow")
+
+```
+
+
+### Autres fonds de carte :
+
+Il existe toute une série d'autres fonds de carte dans le package Natural Earth, notamment avec des résolutions plus précises, mais on se limitera ici à l'exploration des fonds de cart utile pour produire des cartes à contour généralisé couvrant le monde entier.
+
+## Application
+
+Nous allons essayer de construire un fonds de carte qui permette de visualiser l'ensemble des données présentes dans le fichier de la banque mondiale en 2015. Plus précisément, nous allons construire deux fonds de carte, l'un avec une résolution faible ne comportant que 175 pays et l'autre avec une résolution détaillée comportant tous les pays.
+
+### Fonds de carte wb_map_low
+
+On se limite aux plus grands pays 
+
+```{r}
+
+
+# Load map
+map<-st_as_sf(countries110)
+map<-map[c("adm0_a3","name")]
+names(map)<-c("iso3c","name","geometry")
+
+# Add polygons center
+coo<-st_coordinates(st_centroid(map,of_largest_polygon = T))
+map$Lon<-coo[,1]
+map$Lat<-coo[,2]
+
+
+# adjust some codes
+map$iso3c[map$iso3c=="KOS"]<-"XKX"    # Kosovo
+map$iso3c[map$iso3c=="PSX"]<-"PSE"    # Palestinian territories
+map$iso3c[map$iso3c=="SDS"]<-"SSD"    # South Sudan
+
+# Save
+st_write(map,"data/wb_map_low.shp",delete_dsn=T)
+saveRDS(map,"data/wb_map_low.Rdata")
+
+```
+
+
+### Fonds de carte wb_map_high
+
+```{r}
+
+
+# Load map
+map<-st_as_sf(countries50)
+map<-map[c("adm0_a3","name")]
+names(map)<-c("iso3c","name","geometry")
+
+# Add polygons center
+coo<-st_coordinates(st_centroid(map,of_largest_polygon = T))
+map$Lon<-coo[,1]
+map$Lat<-coo[,2]
+
+
+# adjust some codes
+map$iso3c[map$iso3c=="KOS"]<-"XKX"    # Kosovo
+map$iso3c[map$iso3c=="PSX"]<-"PSE"    # Palestinian territories
+map$iso3c[map$iso3c=="SDS"]<-"SSD"    # South Sudan
+
+# Save
+st_write(map,"data/wb_map_high.shp",delete_dsn=T)
+saveRDS(map,"data/wb_map_high.Rdata")
+
+```
+
+
+# VISUALISATIONS
+
+On va élaborer une série de représentations interactives qui pourront ultérieurement être reprises dans une application de type dashboard. On va utiliser pour cela principalement le package `plotly`.
+
+L'exemple retenu sera celui des émissions de CO2 de 1995 à 2015
+
+## Courbes interactives
+
+### CO2
+
+```{r CO2 CURVE}
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+tab<-don %>% filter(date > 1990, date < 2019) %>%
+  select (iso3c, country, date, CO2_est, POP_est, CO2_rnk, CO2_wgt) %>% 
+  filter(CO2_rnk <11) 
+
+tab<-as.data.frame(tab)
+
+
+p <- plot_ly(tab,
+             x = ~date,
+             y = ~CO2_wgt,
+             color= ~country) %>%
+             add_lines()%>%
+         layout(title = "Top 10 des émissions de CO2 (1990-2019)",
+         yaxis = list(title = "% des émissions mondiales de CO2", type="log"), 
+         xaxis = list(title = "Année"))
+p
+
+
+```
+
+
+### PIB
+
+```{r GDP CURVE}
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+tab<-don %>% filter(date > 1990, date < 2019) %>%
+  select (iso3c, country, date, GDP_est, POP_est, GDP_rnk, GDP_wgt) %>% 
+  filter(GDP_rnk <21) 
+
+tab<-as.data.frame(tab)
+
+
+p <- plot_ly(tab,
+             x = ~date,
+             y = ~GDP_wgt,
+             color= ~country) %>%
+             add_lines()%>%
+         layout(title = "Top 20 du PIB en ppa (1990-2019)",
+         yaxis = list(title = "% du PIB mondial en ppa", type="log"), 
+         xaxis = list(title = "Année"))
+p
+
+
+```
+
+
+## Cartes interactives
+
+### CO2
+
+```{r CO2 MAP, fig.width=6}
+# Load map
+map<-readRDS("data/wb_map_high.Rdata")
+
+# Load don for 2015
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+don<-don[don$date==2015,]
+
+# Merge with map
+mapdon<-merge(don,map,by="iso3c",all.x=F,all.y=T)
+
+# Create map
+
+
+
+g <- list(showframe = TRUE,
+          framecolor= toRGB("gray50"),
+          coastlinecolor = toRGB("black"),
+          showland = TRUE,
+          landcolor = toRGB("lightyellow"),
+          showcountries = TRUE,
+          countrycolor = toRGB("black"),
+          countrywidth = 0.2,
+ #        projection = list(type = 'azimuthal equal area'))
+          projection = list(type = 'Mercator'))
+
+
+
+p<- plot_geo(mapdon)%>%
+  add_markers(x = ~Lon,
+              y = ~Lat,
+              sizes = c(0, 1000),
+              size = ~CO2_wgt,
+              color= "red",
+              hoverinfo = "text",
+              text = ~paste('Pays: ', country,
+                            '<br /> % mondial : ',round(CO2_wgt,3),
+                            '<br /> rang mondial : ',round(CO2_rnk,0))) %>%
+  layout(geo = g,
+         title = "Part des émissions mondiales de CO2 en 2015",
+         width=800,
+         height = 400)
+p
+```
+
+### GDP
+
+```{r GDPMAP, fig.width=6}
+# Load map
+map<-readRDS("data/wb_map_high.Rdata")
+
+# Load don for 2015
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+don<-don[don$date==2019,]
+
+# Merge with map
+mapdon<-merge(don,map,by="iso3c",all.x=F,all.y=T)
+
+# Create map
+
+
+
+g <- list(showframe = TRUE,
+          framecolor= toRGB("gray50"),
+          coastlinecolor = toRGB("black"),
+          showland = TRUE,
+          landcolor = toRGB("lightyellow"),
+          showcountries = TRUE,
+          countrycolor = toRGB("black"),
+          countrywidth = 0.2,
+ #        projection = list(type = 'azimuthal equal area'))
+          projection = list(type = 'Mercator'))
+
+
+
+p<- plot_geo(mapdon)%>%
+  add_markers(x = ~Lon,
+              y = ~Lat,
+              sizes = c(0, 1000),
+              size = ~GDP_wgt,
+              color= "red",
+              hoverinfo = "text",
+              text = ~paste('Pays: ', country,
+                            '<br /> % mondial : ',round(GDP_wgt,3),
+                            '<br /> rang mondial : ',round(GDP_rnk,0))) %>%
+  layout(geo = g,
+         title = "Part du PIB mondial (ppa) en 2019",
+         width=800,
+         height = 400)
+p
+```
