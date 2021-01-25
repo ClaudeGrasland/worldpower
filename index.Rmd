@@ -244,15 +244,61 @@ Nous allons donc construire un nouveau tableau où l'on essayera de remplir le m
 
 Avant toute chose, nous allons estimer pour chacune des variables la part des valeurs manquantes en fonction des dates ou des pays.
 
+
+### Corrections manuelles
+
+- On complète les données de terres arables et de superficie qui manquent pour les dernières dates car elles ont du peu évoluer.
+- On complète également les données de CO2 en conservant la valeur de 2015 ce qui est évidememnt abusif mais permet d'avoir un tableau complet.
+- On ajoute manuellement la superficie du Soudan et du Sud-Soudan
+- On procède à une estimation grossière du PIB de la Corée du Nord à partir de ses émissions de CO2 en supposant qu'elles suivent la même loi qu'en Corée du Sud
+- On procède de la même manière à l'estimation de la population urbaine du Kosovo par celle de la Serbie
+
+```{r}
+
+# Load data
+don<-readRDS("data/wb_don_1990_2019.Rdata")
+
+# Correction terres arables
+length(don$ARB[don$date==2016])
+don$ARB[don$date==2016]<-don$ARB[don$date==2015]
+don$ARB[don$date==2017]<-don$ARB[don$date==2015]
+don$ARB[don$date==2018]<-don$ARB[don$date==2015]
+don$ARB[don$date==2019]<-don$ARB[don$date==2015]
+
+## Correction superfice
+don$SRF[don$date==2019]<-don$SRF[don$date==2018]
+
+# Correction CO2
+don$CO2[don$date==2016]<-don$CO2[don$date==2015]
+don$CO2[don$date==2017]<-don$CO2[don$date==2015]
+don$CO2[don$date==2018]<-don$CO2[don$date==2015]
+don$CO2[don$date==2019]<-don$CO2[don$date==2015]
+
+# Sudan and south Sudan area
+don$SRF[don$iso3c=="SDN"]<-1731610
+don$SRF[don$iso3c=="SSD"]<-619700
+
+
+# Sudan and south Sudan arable area
+don$ARB[don$iso3c=="SDN"]<-19823160
+don$ARB[don$iso3c=="SSD"]<-619700*19823160/1731610
+
+# GDP Corée du Nord
+don$GDP[don$iso3c=="PRK"]<-don$CO2[don$iso3c=="PRK"]*don$GDP[don$iso3c=="KOR"]/don$CO2[don$iso3c=="KOR"]
+
+# URB Kosovo
+don$URB[don$iso3c=="XKX"]<-don$POP[don$iso3c=="XKX"]*don$URB[don$iso3c=="SRB"]/don$POP[don$iso3c=="SRB"]
+
+```
+
+
+
+
 ### Tableau de synthèse 
 
 On crée un tableau de synthèse des valeurs manquantes en mode colonne (toutes les variables les unes au dessus des autres et non pas côte à côte) et on utilise pour cela le package `tidyverse` qui est adapté à ce type de manipulation, notamment avec la fonction `gather`.
 
 ```{r}
-# Load data
-don<-readRDS("data/wb_don_1990_2019.Rdata")
-
-
 
 tabmis<-don %>% select(iso3c,country,date,ARB,SRF,CO2,GDP,POP,URB)  %>%
   gather("ARB", "SRF","CO2","GDP","POP","URB",key = VAR, value = DON) %>%
@@ -284,7 +330,9 @@ p
 
 Les valeurs manquantes des années 1990 sont liées souvent à des pays qui n'existent pas encore comme le Sud-Soudan ou le Kosovo et qui ne disposent donc pas de données. Le fait qu'il demeure toujours 5% de pays non renseignés est lié à des pays de très petite taille mal documentés. 
 
-On observe que les données relatives au CO2 et aux terres arables (ARB) n'existent pour aucun pays après 2016.  Il en va de même pour la superficie totale (SRF) des pays en 2019. 
+On observe que les données relatives au CO2 et aux terres arables (ARB) n'existent pour aucun pays après 2016.  Il en va de même pour la superficie totale (SRF) des pays en 2019. Comme cette variable évolue peu au cours du temps, on affecte la valeur de la dernière année disponible.
+
+
 
 
 ### Valeurs manquantes par pays
@@ -484,9 +532,6 @@ On va reconstituer pour chacune de nos variables les valeurs estimées lorsque c
 
 
 ```{r}
-# Load data
-don<-readRDS("data/wb_don_1990_2019.Rdata")
-
 # Estim ARB
 df<-data.table(space=don$iso3c,time=don$date,index=don$ARB)
 est<-estim(df)[,1:3]
@@ -561,10 +606,10 @@ don2<-don %>%  group_by(date) %>% mutate(ARB_rnk = rank(desc(ARB_est)),
 
 ```
 
-### Application au calcul des 10 pays les plus puissants en 1996 et 2016 
+### Application au calcul des 10 pays les plus puissants en 1990 et 2019 
 
 ```{r}
-tab<-don2 %>% filter(date==1996) %>% 
+tab<-don2 %>% filter(date==1990) %>% 
              select(iso3c, country, TOT_rnk, ARB_rnk,SRF_rnk,CO2_rnk,GDP_rnk,POP_rnk,URB_rnk,TOT_rnk) %>%
              arrange(TOT_rnk)
 kable(head(tab,10), digits=1)
@@ -573,7 +618,7 @@ kable(head(tab,10), digits=1)
 
 
 ```{r}
-tab<-don2 %>% filter(date==2016) %>% 
+tab<-don2 %>% filter(date==2019) %>% 
              select(iso3c, country, TOT_rnk, ARB_rnk,SRF_rnk,CO2_rnk,GDP_rnk,POP_rnk,URB_rnk,TOT_rnk) %>%
              arrange(TOT_rnk)
 kable(head(tab,10), digits=1)
@@ -601,10 +646,10 @@ don2<-don2 %>%  group_by(date) %>% mutate(ARB_wgt = 100*ARB_est/sum(ARB_est,na.r
 
 ```
 
-### Application au calcul des 10 pays les plus puissants en 1996 et 2016 
+### Application au calcul des 10 pays les plus puissants en 1990 et 2020 
 
 ```{r}
-tab<-don2 %>% filter(date==1996) %>% 
+tab<-don2 %>% filter(date==1990) %>% 
              select(iso3c, country, TOT_wgt, ARB_wgt,SRF_wgt,CO2_wgt,GDP_wgt,POP_wgt,URB_wgt,TOT_wgt) %>%
              arrange(desc(TOT_wgt))
 kable(head(tab,10), digits=1)
@@ -613,7 +658,7 @@ kable(head(tab,10), digits=1)
 
 
 ```{r}
-tab<-don2 %>% filter(date==2016) %>% 
+tab<-don2 %>% filter(date==2019) %>% 
              select(iso3c, country, TOT_wgt, ARB_wgt,SRF_wgt,CO2_wgt,GDP_wgt,POP_wgt,URB_wgt,TOT_wgt) %>%
              arrange(desc(TOT_wgt))
 kable(head(tab,10), digits=1)
@@ -809,7 +854,7 @@ L'exemple retenu sera celui des émissions de CO2 de 1995 à 2015
 
 ```{r CO2 CURVE}
 don<-readRDS("data/wb_don_1990_2019.Rdata")
-tab<-don %>% filter(date > 1994, date < 2016) %>%
+tab<-don %>% filter(date > 1990, date < 2019) %>%
   select (iso3c, country, date, CO2_est, POP_est, CO2_rnk, CO2_wgt) %>% 
   filter(CO2_rnk <11) 
 
@@ -821,7 +866,7 @@ p <- plot_ly(tab,
              y = ~CO2_wgt,
              color= ~country) %>%
              add_lines()%>%
-         layout(title = "Top 10 des émissions de CO2 (1995-2015)",
+         layout(title = "Top 10 des émissions de CO2 (1990-2019)",
          yaxis = list(title = "% des émissions mondiales de CO2", type="log"), 
          xaxis = list(title = "Année"))
 p
@@ -834,7 +879,7 @@ p
 
 ```{r GDP CURVE}
 don<-readRDS("data/wb_don_1990_2019.Rdata")
-tab<-don %>% filter(date > 1994, date < 2016) %>%
+tab<-don %>% filter(date > 1990, date < 2019) %>%
   select (iso3c, country, date, GDP_est, POP_est, GDP_rnk, GDP_wgt) %>% 
   filter(GDP_rnk <21) 
 
@@ -846,7 +891,7 @@ p <- plot_ly(tab,
              y = ~GDP_wgt,
              color= ~country) %>%
              add_lines()%>%
-         layout(title = "Top 20 du PIB en ppa (1995-2015)",
+         layout(title = "Top 20 du PIB en ppa (1990-2019)",
          yaxis = list(title = "% du PIB mondial en ppa", type="log"), 
          xaxis = list(title = "Année"))
 p
@@ -912,7 +957,7 @@ map<-readRDS("data/wb_map_high.Rdata")
 
 # Load don for 2015
 don<-readRDS("data/wb_don_1990_2019.Rdata")
-don<-don[don$date==2015,]
+don<-don[don$date==2019,]
 
 # Merge with map
 mapdon<-merge(don,map,by="iso3c",all.x=F,all.y=T)
@@ -945,7 +990,7 @@ p<- plot_geo(mapdon)%>%
                             '<br /> % mondial : ',round(GDP_wgt,3),
                             '<br /> rang mondial : ',round(GDP_rnk,0))) %>%
   layout(geo = g,
-         title = "Part du PIB mondial (ppa) en 2015",
+         title = "Part du PIB mondial (ppa) en 2019",
          width=800,
          height = 400)
 p
